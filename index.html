@@ -10,45 +10,40 @@
         body {
             text-align: center;
             font-family: Arial, sans-serif;
-            background-color: #f4f6f9;
+            background: #f4f6f9;
             padding: 20px;
         }
 
-        h2 {
-            color: #333;
-        }
+        h2 { color: #333; }
 
         button {
             padding: 12px 25px;
             margin: 10px;
             font-size: 18px;
-            cursor: pointer;
             border: none;
             border-radius: 8px;
-            background-color: #2878d0;
+            background: #2878d0;
             color: white;
+            cursor: pointer;
         }
 
-        button:hover {
-            background-color: #145da0;
-        }
-
-        #webcam-container {
-            margin: 15px;
+        button:disabled {
+            background: gray;
+            cursor: not-allowed;
         }
 
         #countdown {
             font-size: 45px;
+            color: red;
             font-weight: bold;
-            color: #e74c3c;
             margin: 20px;
         }
 
         #result {
             font-size: 24px;
             font-weight: bold;
-            margin: 20px;
             color: #2878d0;
+            margin: 20px;
         }
 
         #score {
@@ -58,6 +53,7 @@
 
         #status {
             color: #555;
+            margin: 15px;
         }
     </style>
 </head>
@@ -66,13 +62,18 @@
 
     <h2>AI 가위바위보 게임</h2>
 
-    <button type="button" onclick="init()">게임 시작</button>
-    <button type="button" onclick="resetGame()">다시 하기</button>
+    <button id="startBtn" onclick="startGame()">
+        게임 시작
+    </button>
+
+    <button onclick="resetGame()">
+        점수 초기화
+    </button>
 
     <h3>나의 손동작</h3>
 
     <div id="webcam-container"></div>
-    <div id="label-container">웹캠 실행 대기 중</div>
+    <div id="label-container">웹캠 실행 전</div>
 
     <div id="countdown"></div>
 
@@ -86,7 +87,8 @@
         나: 0점 / 컴퓨터: 0점
     </div>
 
-    <div id="status"></div>
+    <div id="status">게임 준비 완료</div>
+
 
 <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@latest/dist/tf.min.js"></script>
 
@@ -94,190 +96,136 @@
 
 <script>
 
-    // Teachable Machine 모델 경로
+    // 1. 모델 경로
     const URL = "./model/";
 
     let model;
     let webcam;
-    let maxPredictions;
+
+    let isReady = false;
+    let isPlaying = false;
+    let gameOver = false;
 
     let myScore = 0;
     let computerScore = 0;
 
-    let isPlaying = false;
-    let isCounting = false;
-    let isReady = false;
-
-    let countdownTimer;
-
     const hands = ["가위", "바위", "보"];
 
-    // 1. 게임 시작
-    async function init() {
+    const startBtn = document.getElementById("startBtn");
 
-        if (isReady) {
-            resetGame();
-            return;
-        }
 
-        document.getElementById("status").innerHTML =
-            "AI 모델을 불러오는 중입니다.";
-
-        try {
-
-            const modelURL = URL + "model.json";
-            const metadataURL = URL + "metadata.json";
-
-            model = await tmImage.load(modelURL, metadataURL);
-
-            maxPredictions = model.getTotalClasses();
-
-            // 웹캠 설정
-            const flip = true;
-
-            webcam = new tmImage.Webcam(200, 200, flip);
-
-            await webcam.setup();
-            await webcam.play();
-
-            document.getElementById("webcam-container")
-                .appendChild(webcam.canvas);
-
-            isReady = true;
-
-            document.getElementById("status").innerHTML =
-                "웹캠 준비 완료! 게임을 시작합니다.";
-
-            resetGame();
-
-            window.requestAnimationFrame(loop);
-
-        } catch (error) {
-
-            document.getElementById("status").innerHTML =
-                "오류 발생: 카메라 권한과 모델 경로를 확인하세요.";
-
-            console.error(error);
-        }
+    // 시간 지연 함수
+    function sleep(ms) {
+        return new Promise(resolve => setTimeout(resolve, ms));
     }
 
-    // 2. 웹캠 반복 실행
-    async function loop() {
 
-        if (!isReady) return;
-
-        webcam.update();
-
-        await predict();
-
-        window.requestAnimationFrame(loop);
-    }
-
-    // 3. AI 손동작 인식
-    async function predict() {
-
-        const prediction = await model.predict(webcam.canvas);
-
-        let bestPrediction = prediction[0];
-
-        for (let i = 1; i < maxPredictions; i++) {
-
-            if (prediction[i].probability >
-                bestPrediction.probability) {
-
-                bestPrediction = prediction[i];
-            }
-        }
-
-        const hand = bestPrediction.className;
-        const confidence = bestPrediction.probability;
-
-        document.getElementById("label-container").innerHTML =
-            "인식 결과: " + hand +
-            " (" + (confidence * 100).toFixed(1) + "%)";
-
-        // 카운트다운이 끝난 후에만 판정
-        if (isCounting && confidence >= 0.90 &&
-            hands.includes(hand)) {
-
-            isCounting = false;
-
-            clearInterval(countdownTimer);
-
-            playGame(hand);
-        }
-    }
-
-    // 4. 카운트다운 시작
-    function startGame() {
-
-        if (!isReady) {
-            document.getElementById("status").innerHTML =
-                "먼저 게임 시작 버튼을 눌러주세요.";
-            return;
-        }
+    // 2. 게임 시작 및 모델 로딩
+    async function startGame() {
 
         if (isPlaying) return;
 
-        if (myScore >= 2 || computerScore >= 2) {
+        // 게임이 끝났다면 점수 초기화
+        if (gameOver) {
+            resetGame();
+        }
+
+        startBtn.disabled = true;
+
+        try {
+
+            if (!isReady) {
+
+                document.getElementById("status").innerHTML =
+                    "AI 모델을 불러오는 중입니다.";
+
+                const modelURL = URL + "model.json";
+                const metadataURL = URL + "metadata.json";
+
+                model = await tmImage.load(
+                    modelURL,
+                    metadataURL
+                );
+
+                // 웹캠 설정
+                webcam = new tmImage.Webcam(300, 300, true);
+
+                await webcam.setup();
+                await webcam.play();
+
+                document.getElementById("webcam-container")
+                    .appendChild(webcam.canvas);
+
+                isReady = true;
+            }
+
+            // 한 판 진행
+            await playRound();
+
+        } catch (error) {
+
+            console.error(error);
+
+            document.getElementById("status").innerHTML =
+                "오류 발생: 모델 경로 또는 카메라 권한을 확인하세요.";
+
+            startBtn.disabled = false;
+        }
+    }
+
+
+    // 3. 한 판 진행
+    async function playRound() {
+
+        isPlaying = true;
+
+        document.getElementById("status").innerHTML =
+            "손동작을 준비하세요!";
+
+        document.getElementById("result").innerHTML =
+            "가위, 바위, 보 중 하나를 준비하세요.";
+
+        // 3초 카운트다운
+        for (let i = 3; i >= 1; i--) {
+
+            document.getElementById("countdown").innerHTML = i;
+
+            await sleep(1000);
+        }
+
+        document.getElementById("countdown").innerHTML =
+            "인식 중!";
+
+        document.getElementById("status").innerHTML =
+            "AI가 손동작을 분석하고 있습니다.";
+
+        // 여러 프레임을 분석
+        const myHand = await recognizeHand();
+
+        document.getElementById("label-container").innerHTML =
+            "최종 인식 결과: " + (myHand || "인식 실패");
+
+        if (myHand === null) {
+
+            document.getElementById("result").innerHTML =
+                "손동작을 정확하게 인식하지 못했습니다.";
+
+            document.getElementById("status").innerHTML =
+                "다시 게임 시작 버튼을 눌러주세요.";
+
+            document.getElementById("countdown").innerHTML = "";
+
+            isPlaying = false;
+            startBtn.disabled = false;
+
             return;
         }
 
-        isPlaying = true;
-        isCounting = true;
-
-        let count = 3;
-
-        document.getElementById("result").innerHTML =
-            "손동작을 준비하세요!";
-
-        document.getElementById("countdown").innerHTML = count;
-
-        countdownTimer = setInterval(function() {
-
-            count--;
-
-            if (count > 0) {
-
-                document.getElementById("countdown").innerHTML =
-                    count;
-
-            } else {
-
-                document.getElementById("countdown").innerHTML =
-                    "손동작 인식 중!";
-
-                clearInterval(countdownTimer);
-
-                // 인식 대기 시간 2초
-                setTimeout(function() {
-
-                    if (isCounting) {
-
-                        isCounting = false;
-                        isPlaying = false;
-
-                        document.getElementById("countdown").innerHTML =
-                            "다시 시도하세요.";
-
-                        document.getElementById("result").innerHTML =
-                            "손동작을 인식하지 못했습니다.";
-
-                    }
-
-                }, 2000);
-            }
-
-        }, 1000);
-    }
-
-    // 5. 가위바위보 승패 판정
-    function playGame(myHand) {
-
-        // 컴퓨터가 무작위로 선택
+        // 컴퓨터의 손동작 선택
         const computerHand =
             hands[Math.floor(Math.random() * 3)];
 
+        // 승패 판정
         let result = "";
 
         if (myHand === computerHand) {
@@ -304,7 +252,7 @@
         // 결과 출력
         document.getElementById("result").innerHTML =
             "나: " + myHand +
-            " / 컴퓨터: " + computerHand +
+            "<br>컴퓨터: " + computerHand +
             "<br><br>" + result;
 
         // 점수 출력
@@ -315,14 +263,14 @@
         document.getElementById("countdown").innerHTML = "";
 
         // 3판 2선승제
-        if (myScore === 2 || computerScore === 2) {
+        if (myScore >= 2 || computerScore >= 2) {
 
-            isPlaying = true;
+            gameOver = true;
 
-            if (myScore === 2) {
+            if (myScore >= 2) {
 
                 document.getElementById("result").innerHTML +=
-                    "<br><br>축하합니다! 최종 승리!";
+                    "<br><br>🎉 최종 승리!";
 
             } else {
 
@@ -332,27 +280,108 @@
             }
 
             document.getElementById("status").innerHTML =
-                "게임 종료! 다시 하기를 눌러주세요.";
+                "게임 종료! 다시 시작할 수 있습니다.";
+
+            startBtn.innerHTML = "다시 시작";
 
         } else {
 
-            isPlaying = false;
-
             document.getElementById("status").innerHTML =
-                "다음 게임을 시작하려면 게임 시작 버튼을 누르세요.";
+                "다음 판을 진행하려면 버튼을 누르세요.";
+
+            startBtn.innerHTML = "다음 판";
         }
+
+        isPlaying = false;
+        startBtn.disabled = false;
     }
 
-    // 6. 점수 초기화 및 다시 하기
+
+    // 4. 손동작 인식 (15회 분석)
+    async function recognizeHand() {
+
+        const counts = {
+            "가위": 0,
+            "바위": 0,
+            "보": 0
+        };
+
+        let validCount = 0;
+
+        for (let i = 0; i < 15; i++) {
+
+            webcam.update();
+
+            const prediction = await model.predict(webcam.canvas);
+
+            let best = prediction[0];
+
+            for (let j = 1; j < prediction.length; j++) {
+
+                if (prediction[j].probability >
+                    best.probability) {
+
+                    best = prediction[j];
+                }
+            }
+
+            const hand = best.className;
+            const confidence = best.probability;
+
+            // 신뢰도 65% 이상인 결과만 사용
+            if (confidence >= 0.65 &&
+                hands.includes(hand)) {
+
+                counts[hand]++;
+                validCount++;
+            }
+
+            document.getElementById("label-container").innerHTML =
+                "인식 중: " + hand +
+                " (" + (confidence * 100).toFixed(1) + "%)";
+
+            await sleep(100);
+        }
+
+        // 유효한 인식이 없으면 실패
+        if (validCount < 5) {
+            return null;
+        }
+
+        // 가장 많이 인식된 손동작 선택
+        let bestHand = null;
+        let maxCount = 0;
+
+        for (const hand of hands) {
+
+            if (counts[hand] > maxCount) {
+
+                maxCount = counts[hand];
+                bestHand = hand;
+            }
+        }
+
+        // 동률인 경우 인식 실패 처리
+        const tiedHands = hands.filter(
+            hand => counts[hand] === maxCount
+        );
+
+        if (tiedHands.length !== 1) {
+            return null;
+        }
+
+        return bestHand;
+    }
+
+
+    // 5. 점수 초기화
     function resetGame() {
 
         myScore = 0;
         computerScore = 0;
 
+        gameOver = false;
         isPlaying = false;
-        isCounting = false;
-
-        clearInterval(countdownTimer);
 
         document.getElementById("score").innerHTML =
             "나: 0점 / 컴퓨터: 0점";
@@ -364,6 +393,9 @@
 
         document.getElementById("status").innerHTML =
             "게임 준비 완료!";
+
+        startBtn.innerHTML = "게임 시작";
+        startBtn.disabled = false;
     }
 
 </script>
